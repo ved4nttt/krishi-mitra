@@ -17,6 +17,7 @@ import uvicorn
 app = FastAPI(title="Krishi-Mitra Production Engine")
 
 @app.get("/")
+@app.head("/")
 def health_check():
     return {"status": "Krishi-Mitra is online and healthy!"}
 
