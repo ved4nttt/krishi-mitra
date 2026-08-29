@@ -16,6 +16,10 @@ import uvicorn
 
 app = FastAPI(title="Krishi-Mitra Production Engine")
 
+@app.get("/")
+def health_check():
+    return {"status": "Krishi-Mitra is online and healthy!"}
+
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
