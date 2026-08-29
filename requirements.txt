@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+twilio
+deep-translator
+gTTS
+SpeechRecognition
+pydub
+psycopg2-binary
+requests
