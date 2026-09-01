@@ -8,3 +8,9 @@ SpeechRecognition
 pydub
 psycopg2-binary
 requests
+streamlit
+supabase
+pandas
+plotly
+pydeck
+numpy
