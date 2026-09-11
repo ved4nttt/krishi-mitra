@@ -128,14 +128,12 @@ You are Krishi-Mitra, an expert AI Agricultural Scientist and Farmer Assistant. 
         if image_base64:
             parts.append({"inline_data": {"mime_type": mime_type, "data": image_base64}})
 
-        # Updated to the latest production model: Gemini 3.8 Flash
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"system_instruction": {"parts": [{"text": system_instruction}]}, "contents": [{"role": "user", "parts": parts}]}
         res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}).json()
 
         if "error" in res:
-            # Fallback to the stable Gemini 3.7 Flash
-            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key={GEMINI_API_KEY}"
+            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-pro:generateContent?key={GEMINI_API_KEY}"
             res = requests.post(url_fallback, json=payload, headers={"Content-Type": "application/json"}).json()
 
         if "candidates" in res and len(res["candidates"]) > 0:
@@ -203,7 +201,6 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
     if lat and lon:
         inferred_query_type = "location"
         
-        # --- FIXED: Safe connection handling to prevent DB lockouts ---
         loc_conn = None
         loc_cursor = None
         try:
@@ -218,11 +215,9 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
                 loc_cursor.close()
             if loc_conn:
                 loc_conn.close()
-        # --------------------------------------------------------------
             
         weather_info = get_live_weather(lat=float(lat), lon=float(lon), city_name="Your Location")
         final_text = query_agricultural_llm(f"Farmer shared GPS ({lat}, {lon}). Live weather: '{weather_info}'. Provide concise localized farm advisory.", user_lang)
-
 
     # 3. Image/Vision Processing (Crop Doctor)
     elif image_base64:
@@ -287,19 +282,23 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
             
         print(f"[{sender_phone}] Successfully delivered response.")
 
-        conn = get_db()
-        cursor = conn.cursor()
+        log_conn = None
+        log_cursor = None
         try:
-            cursor.execute("""
+            log_conn = get_db()
+            log_cursor = log_conn.cursor()
+            log_cursor.execute("""
                 INSERT INTO logs (phone, query_type, user_input, query_text, bot_response, timestamp) 
                 VALUES (%s, %s, %s, %s, %s, NOW())
             """, (sender_phone, inferred_query_type, query_text_clean, query_text, final_text))
-            conn.commit()
+            log_conn.commit()
         except Exception as db_err:
             print(f"DB Logging Error: {db_err}")
         finally:
-            cursor.close()
-            conn.close()
+            if log_cursor:
+                log_cursor.close()
+            if log_conn:
+                log_conn.close()
 
     except Exception as e:
         print(f"Delivery Error: {e}")
@@ -348,7 +347,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         if incoming_msg in ["1", "2", "3", "4"]:
             cursor.execute("UPDATE users SET lang = %s WHERE phone = %s", (incoming_msg, sender_phone))
             conn.commit()
-            confirmations = {"1": "Language updated to English.", "2": "भाषा बदलकर हिन्दी कर दी गई है।", "3": "भाषा मराठीमध्ये बदलली आहे.", "4": "ਭਾਸ਼ਾ ਪੰਜਾਬੀ ਵਿੱਚ ਬਦਲ ਦਿੱਤੀ ਗਈ ਹੈ।"}
+            confirmations = {"1": "Language updated to English.", "2": "भाषा बदलकर हिन्दी कर दी गई है।", "3": "भाषा मराठीमध्ये बदलली आहे.", "4": "ਭਾਸ਼ਾ ਪੰਜਾਬੀ ਵਿੱਚ ਬਦਲ ਦਿੱਤੀ गई है।"}
             resp.message(f"{confirmations.get(incoming_msg)}\n\n{get_full_manual(incoming_msg)}")
             return Response(content=str(resp), media_type="application/xml")
 
