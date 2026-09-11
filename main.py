@@ -202,8 +202,27 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
     # 2. Location Pin Processing
     if lat and lon:
         inferred_query_type = "location"
+        
+        # --- FIXED: Safe connection handling to prevent DB lockouts ---
+        loc_conn = None
+        loc_cursor = None
+        try:
+            loc_conn = get_db()
+            loc_cursor = loc_conn.cursor()
+            loc_cursor.execute("UPDATE users SET latitude = %s, longitude = %s WHERE phone = %s", (float(lat), float(lon), sender_phone))
+            loc_conn.commit()
+        except Exception as e:
+            print(f"GPS Save Error: {e}")
+        finally:
+            if loc_cursor:
+                loc_cursor.close()
+            if loc_conn:
+                loc_conn.close()
+        # --------------------------------------------------------------
+            
         weather_info = get_live_weather(lat=float(lat), lon=float(lon), city_name="Your Location")
         final_text = query_agricultural_llm(f"Farmer shared GPS ({lat}, {lon}). Live weather: '{weather_info}'. Provide concise localized farm advisory.", user_lang)
+
 
     # 3. Image/Vision Processing (Crop Doctor)
     elif image_base64:
