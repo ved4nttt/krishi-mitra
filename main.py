@@ -71,6 +71,10 @@ MANDI_DATABASE = {
 GREETINGS = ["hi", "hello", "hey", "namaste", "sat sri akal", "menu", "help", "start", "नमस्कार", "नमस्ते", "ਸਤ ਸ੍ਰੀ ਅਕਾਲ", "hii"]
 CHANGE_LOC_KEYWORDS = ["change location", "update location", "location badlo", "लोकेशन बदलें", "जगह बदलें", "स्थान बदलें", "ठिकाण बदला", "लोकेशन बदला", "location badal", "ਲੋਕੇਸ਼ਨ ਬਦਲੋ", "ਜਗ੍ਹਾ ਬਦਲੋ"]
 
+def clean_text_for_audio(text: str) -> str:
+    """Strips emojis and special characters so gTTS reads naturally."""
+    return re.sub(r'[^\w\s.,?!\'":;-]', '', text)
+
 def get_full_manual(lang_code: str) -> str:
     manuals = {
         "1": "📖 *Krishi-Mitra User Manual* 📖\n\nHere is everything I can do to help your farm:\n📍 *Weather:* Ask for weather updates or send a GPS Pin for local rain forecasts.\n📸 *Crop Doctor:* Send a photo of a sick plant for an instant AI disease diagnosis!\n🌱 *Mandi Rates:* Ask for crop prices (e.g., 'Wheat price today').\n🤖 *Farming Advice:* Ask any question about fertilizers, pests, or PM-Kisan schemes.\n🎙️ *Voice Mode:* Send a voice note, or just add the word *'voice'* to your text to hear me speak!\n\n*(⚙️ Settings: Type 'Change location' or text 1, 2, 3, 4 anytime to change language)*",
@@ -124,12 +128,14 @@ You are Krishi-Mitra, an expert AI Agricultural Scientist and Farmer Assistant. 
         if image_base64:
             parts.append({"inline_data": {"mime_type": mime_type, "data": image_base64}})
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+        # Updated to the latest production model: Gemini 3.8 Flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"system_instruction": {"parts": [{"text": system_instruction}]}, "contents": [{"role": "user", "parts": parts}]}
         res = requests.post(url, json=payload, headers={"Content-Type": "application/json"}).json()
 
         if "error" in res:
-            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-pro:generateContent?key={GEMINI_API_KEY}"
+            # Fallback to the stable Gemini 3.7 Flash
+            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key={GEMINI_API_KEY}"
             res = requests.post(url_fallback, json=payload, headers={"Content-Type": "application/json"}).json()
 
         if "candidates" in res and len(res["candidates"]) > 0:
@@ -151,10 +157,13 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
     session_id = uuid.uuid4().hex[:8] 
     image_base64 = None
     mime_type = "image/jpeg"
+    final_text = ""
+    inferred_query_type = "text"
 
     # 1. Process Media (Voice Note OR Image)
     if media_url:
         if media_type.startswith("audio"):
+            inferred_query_type = "voice"
             print(f"[{sender_phone}] Downloading voice note...")
             response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_TOKEN))
             clean_phone = re.sub(r'\D', '', sender_phone)
@@ -181,6 +190,7 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
                 if os.path.exists(wav_file): os.remove(wav_file)
         
         elif media_type.startswith("image"):
+            inferred_query_type = "image"
             print(f"[{sender_phone}] Downloading crop image for AI Diagnosis...")
             response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_TOKEN))
             image_base64 = base64.b64encode(response.content).decode('utf-8')
@@ -191,6 +201,7 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
     
     # 2. Location Pin Processing
     if lat and lon:
+        inferred_query_type = "location"
         weather_info = get_live_weather(lat=float(lat), lon=float(lon), city_name="Your Location")
         final_text = query_agricultural_llm(f"Farmer shared GPS ({lat}, {lon}). Live weather: '{weather_info}'. Provide concise localized farm advisory.", user_lang)
 
@@ -233,7 +244,8 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
         out_file_name = f"out_{clean_phone}_{session_id}.mp3"
         out_file_path = f"static/{out_file_name}"
         try:
-            tts = gTTS(text=final_text, lang=tts_target)
+            safe_audio_text = clean_text_for_audio(final_text)
+            tts = gTTS(text=safe_audio_text, lang=tts_target)
             tts.save(out_file_path)
             audio_reply_url = f"{BASE_URL}/static/{out_file_name}"
         except Exception as e:
@@ -248,7 +260,7 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
             }
             final_text += footer_tips.get(user_lang, footer_tips["1"])
 
-    # 7. Deliver WhatsApp Messages Separately
+    # 7. Deliver WhatsApp Messages Separately & Log to DB
     try:
         twilio_client.messages.create(from_=TWILIO_SANDBOX_NUMBER, body=final_text, to=sender_phone)
         if audio_reply_url:
@@ -256,13 +268,20 @@ def process_query_async(sender_phone: str, query_text: str, media_url: str, medi
             
         print(f"[{sender_phone}] Successfully delivered response.")
 
-        if query_text:
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO logs (phone, query_text) VALUES (%s, %s)", (sender_phone, query_text))
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO logs (phone, query_type, user_input, query_text, bot_response, timestamp) 
+                VALUES (%s, %s, %s, %s, %s, NOW())
+            """, (sender_phone, inferred_query_type, query_text_clean, query_text, final_text))
             conn.commit()
+        except Exception as db_err:
+            print(f"DB Logging Error: {db_err}")
+        finally:
             cursor.close()
             conn.close()
+
     except Exception as e:
         print(f"Delivery Error: {e}")
 
@@ -289,7 +308,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             if incoming_msg in ["1", "2", "3", "4"]:
                 cursor.execute("INSERT INTO users (phone, lang, location) VALUES (%s, %s, %s)", (sender_phone, incoming_msg, 'PENDING'))
                 conn.commit()
-                # Send the manual and ask for location immediately
                 resp.message(get_full_manual(incoming_msg) + "\n\n" + get_location_prompt(incoming_msg))
                 return Response(content=str(resp), media_type="application/xml")
             else:
